@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "forcerun",
+  "version": "${version}",
+  "name": "ForceRun Fortress",
+  "description": "Adds /forcerun fortress, which generates a fully registered Nether Fortress at your location.",
+  "authors": [],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["com.forcerun.ForceRunMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
