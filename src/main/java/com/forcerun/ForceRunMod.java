@@ -2,74 +2,137 @@ package com.forcerun;
 
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType;
+
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
+
 import net.minecraft.network.chat.Component;
+
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.StructureManager;
+
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.ChunkGenerator;
+
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.BuiltinStructures;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 
+
 public class ForceRunMod implements ModInitializer {
 
-    private static final SimpleCommandExceptionType NOT_IN_NETHER =
+    /*
+     * ============================================================
+     * ERROR MESSAGES
+     * ============================================================
+     */
+
+    private static final SimpleCommandExceptionType
+            FORTRESS_WRONG_DIMENSION =
             new SimpleCommandExceptionType(
                     Component.literal(
-                            "You must be in the Nether to use this command."
+                            "You must be in the Nether to use /forcerun fortress."
                     )
             );
 
-    private static final SimpleCommandExceptionType ALREADY_PRESENT =
+    private static final SimpleCommandExceptionType
+            STRONGHOLD_WRONG_DIMENSION =
             new SimpleCommandExceptionType(
                     Component.literal(
-                            "A fortress already starts in this chunk."
+                            "You must be in the Overworld to use /forcerun stronghold."
                     )
             );
 
-    private static final SimpleCommandExceptionType FAILED =
+    private static final SimpleCommandExceptionType
+            ALREADY_PRESENT =
             new SimpleCommandExceptionType(
                     Component.literal(
-                            "Fortress generation failed."
+                            "A structure already starts in this chunk."
                     )
             );
+
+    private static final SimpleCommandExceptionType
+            GENERATION_FAILED =
+            new SimpleCommandExceptionType(
+                    Component.literal(
+                            "Structure generation failed."
+                    )
+            );
+
+
+    /*
+     * ============================================================
+     * COMMAND REGISTRATION
+     * ============================================================
+     */
 
     @Override
     public void onInitialize() {
 
         CommandRegistrationCallback.EVENT.register(
-                (dispatcher, registryAccess, environment) ->
-                        dispatcher.register(
-                                Commands.literal("forcerun")
-                                        .requires(
-                                                Commands.hasPermission(
-                                                        Commands.LEVEL_GAMEMASTERS
-                                                )
-                                        )
-                                        .then(
-                                                Commands.literal("fortress")
-                                                        .executes(
-                                                                context ->
-                                                                        run(
-                                                                                context.getSource()
-                                                                        )
-                                                        )
-                                        )
-                        )
+                (dispatcher, registryAccess, environment) -> {
+
+                    dispatcher.register(
+                            Commands.literal("forcerun")
+
+                                    .requires(
+                                            Commands.hasPermission(
+                                                    Commands.LEVEL_GAMEMASTERS
+                                            )
+                                    )
+
+                                    /*
+                                     * /forcerun fortress
+                                     */
+                                    .then(
+                                            Commands.literal("fortress")
+                                                    .executes(
+                                                            context ->
+                                                                    runFortress(
+                                                                            context.getSource()
+                                                                    )
+                                                    )
+                                    )
+
+                                    /*
+                                     * /forcerun stronghold
+                                     */
+                                    .then(
+                                            Commands.literal("stronghold")
+                                                    .executes(
+                                                            context ->
+                                                                    runStronghold(
+                                                                            context.getSource()
+                                                                    )
+                                                    )
+                                    )
+                    );
+                }
         );
     }
 
-    private static int run(
+
+    /*
+     * ============================================================
+     * FORTRESS COMMAND
+     * ============================================================
+     *
+     * This is the same working Fortress generation approach
+     * from your current version.
+     */
+
+    private static int runFortress(
             CommandSourceStack source
     ) throws CommandSyntaxException {
 
@@ -79,64 +142,188 @@ public class ForceRunMod implements ModInitializer {
         ServerLevel level =
                 source.getLevel();
 
-        /*
-         * Only allow the command in the Nether.
-         */
-        if (level.dimension() != Level.NETHER) {
-            throw NOT_IN_NETHER.create();
-        }
 
         /*
-         * Get Minecraft's real vanilla Nether Fortress
-         * structure definition.
+         * Fortress must be generated in the Nether.
          */
+
+        if (level.dimension() != Level.NETHER) {
+            throw FORTRESS_WRONG_DIMENSION.create();
+        }
+
+
+        /*
+         * Get the vanilla Fortress structure.
+         */
+
         Holder<Structure> fortressHolder =
                 level.registryAccess()
                         .lookupOrThrow(Registries.STRUCTURE)
-                        .getOrThrow(BuiltinStructures.FORTRESS);
+                        .getOrThrow(
+                                BuiltinStructures.FORTRESS
+                        );
+
 
         Structure fortress =
                 fortressHolder.value();
 
+
+        /*
+         * Generate the structure.
+         */
+
+        generateStructure(
+                source,
+                player,
+                level,
+                fortressHolder,
+                fortress,
+                "Nether Fortress"
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * ============================================================
+     * STRONGHOLD COMMAND
+     * ============================================================
+     *
+     * This uses Minecraft's registered Stronghold structure.
+     *
+     * We are NOT placing a saved structure.
+     *
+     * The vanilla Stronghold structure is responsible for
+     * generating its rooms and pieces.
+     */
+
+    private static int runStronghold(
+            CommandSourceStack source
+    ) throws CommandSyntaxException {
+
+        ServerPlayer player =
+                source.getPlayerOrException();
+
+        ServerLevel level =
+                source.getLevel();
+
+
+        /*
+         * Strongholds belong in the Overworld.
+         */
+
+        if (level.dimension() != Level.OVERWORLD) {
+            throw STRONGHOLD_WRONG_DIMENSION.create();
+        }
+
+
+        /*
+         * Get Minecraft's actual vanilla Stronghold.
+         */
+
+        Holder<Structure> strongholdHolder =
+                level.registryAccess()
+                        .lookupOrThrow(Registries.STRUCTURE)
+                        .getOrThrow(
+                                BuiltinStructures.STRONGHOLD
+                        );
+
+
+        Structure stronghold =
+                strongholdHolder.value();
+
+
+        /*
+         * Generate the structure.
+         */
+
+        generateStructure(
+                source,
+                player,
+                level,
+                strongholdHolder,
+                stronghold,
+                "Stronghold"
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * ============================================================
+     * GENERIC STRUCTURE GENERATOR
+     * ============================================================
+     *
+     * This is shared by Fortress and Stronghold.
+     *
+     * The important part is that Minecraft creates a real
+     * StructureStart from the registered vanilla structure.
+     */
+
+    private static void generateStructure(
+            CommandSourceStack source,
+            ServerPlayer player,
+            ServerLevel level,
+            Holder<Structure> structureHolder,
+            Structure structure,
+            String structureName
+    ) throws CommandSyntaxException {
+
+
+        /*
+         * Get the world's normal ChunkGenerator.
+         */
+
         ChunkGenerator generator =
                 level.getChunkSource().getGenerator();
 
+
         /*
-         * Get the chunk containing the player.
-         *
-         * Minecraft 26.x:
-         * ChunkPos(BlockPos) -> ChunkPos.containing(BlockPos)
+         * Find the chunk where the player currently is.
          */
+
         ChunkPos startChunkPos =
                 ChunkPos.containing(
                         player.blockPosition()
                 );
 
+
         /*
-         * Load the origin chunk.
+         * Load that chunk.
          */
+
         ChunkAccess startChunk =
                 level.getChunk(
                         startChunkPos.x(),
                         startChunkPos.z()
                 );
 
+
         /*
-         * Don't overwrite an existing fortress.
+         * Don't put another structure start over an existing
+         * structure of the same type.
          */
-        if (startChunk.getStartForStructure(fortress) != null) {
+
+        if (startChunk.getStartForStructure(structure) != null) {
+
             throw ALREADY_PRESENT.create();
         }
 
+
         /*
-         * Generate the actual vanilla StructureStart.
+         * Ask Minecraft to create the actual StructureStart.
          *
-         * This creates the real fortress pieces instead of
-         * simply copying a structure as blocks.
+         * This is NOT /place structure.
+         *
+         * The registered vanilla structure gets to generate
+         * its own pieces.
          */
+
         StructureStart start =
-                fortress.generate(
-                        fortressHolder,
+                structure.generate(
+                        structureHolder,
                         level.dimension(),
                         level.registryAccess(),
                         generator,
@@ -150,24 +337,36 @@ public class ForceRunMod implements ModInitializer {
                         biome -> true
                 );
 
-        if (!start.isValid()) {
-            throw FAILED.create();
-        }
 
         /*
-         * Get the fortress bounding box.
+         * Make sure generation produced something.
          */
+
+        if (!start.isValid()) {
+
+            throw GENERATION_FAILED.create();
+        }
+
+
+        /*
+         * Get the complete structure bounding box.
+         */
+
         BoundingBox structureBox =
                 start.getBoundingBox();
 
+
         /*
-         * Convert the bounding box to chunk coordinates.
+         * Convert the structure's block bounding box
+         * into chunk coordinates.
          */
+
         ChunkPos minChunk =
                 new ChunkPos(
                         structureBox.minX() >> 4,
                         structureBox.minZ() >> 4
                 );
+
 
         ChunkPos maxChunk =
                 new ChunkPos(
@@ -175,24 +374,30 @@ public class ForceRunMod implements ModInitializer {
                         structureBox.maxZ() >> 4
                 );
 
+
         /*
-         * Get the StructureManager required by
-         * StructureStart.placeInChunk().
-         *
-         * IMPORTANT:
-         * level.getStructureManager() returns a
-         * StructureTemplateManager in 26.2.
+         * StructureStart.placeInChunk() requires the actual
+         * StructureManager.
          */
+
         StructureManager structureManager =
                 level.structureManager();
 
+
         /*
-         * Place every generated fortress piece.
+         * ========================================================
+         * PLACE STRUCTURE PIECES
+         * ========================================================
          */
+
         ChunkPos.rangeClosed(
                 minChunk,
                 maxChunk
         ).forEach(chunkPos -> {
+
+            /*
+             * Load this chunk.
+             */
 
             ChunkAccess chunk =
                     level.getChunk(
@@ -200,15 +405,30 @@ public class ForceRunMod implements ModInitializer {
                             chunkPos.z()
                     );
 
+
+            /*
+             * Create a box covering this entire chunk.
+             *
+             * This allows the StructureStart to place every
+             * piece that intersects this chunk.
+             */
+
             BoundingBox chunkBox =
                     new BoundingBox(
                             chunkPos.getMinBlockX(),
                             level.getMinY(),
                             chunkPos.getMinBlockZ(),
+
                             chunkPos.getMaxBlockX(),
                             level.getMaxY() + 1,
                             chunkPos.getMaxBlockZ()
                     );
+
+
+            /*
+             * Let Minecraft place the generated structure
+             * pieces into the chunk.
+             */
 
             start.placeInChunk(
                     level,
@@ -219,36 +439,65 @@ public class ForceRunMod implements ModInitializer {
                     chunkPos
             );
 
+
+            /*
+             * The chunk changed and needs to be saved.
+             */
+
             chunk.markUnsaved();
         });
 
+
         /*
-         * Register the StructureStart in the origin chunk.
+         * ========================================================
+         * REGISTER THE STRUCTURE START
+         * ========================================================
+         *
+         * This is important.
+         *
+         * We don't want Minecraft to merely see blocks.
+         * We want the chunk to know that a real structure
+         * starts here.
          */
+
         startChunk.setStartForStructure(
-                fortress,
+                structure,
                 start
         );
 
         startChunk.markUnsaved();
 
+
         /*
-         * Create the packed chunk reference.
+         * Pack the origin chunk coordinates.
+         *
+         * This is the reference used by structure references.
          */
+
         long startKey =
                 ChunkPos.pack(
                         startChunkPos.x(),
                         startChunkPos.z()
                 );
 
+
         /*
-         * Register the fortress reference in every
-         * chunk touched by the structure.
+         * ========================================================
+         * REGISTER STRUCTURE REFERENCES
+         * ========================================================
+         *
+         * Every chunk touched by the structure receives a
+         * reference back to the structure's starting chunk.
          */
+
         ChunkPos.rangeClosed(
                 minChunk,
                 maxChunk
         ).forEach(chunkPos -> {
+
+            /*
+             * Load the affected chunk.
+             */
 
             ChunkAccess chunk =
                     level.getChunk(
@@ -256,20 +505,36 @@ public class ForceRunMod implements ModInitializer {
                             chunkPos.z()
                     );
 
+
+            /*
+             * Register the structure reference.
+             */
+
             chunk.addReferenceForStructure(
-                    fortress,
+                    structure,
                     startKey
             );
+
+
+            /*
+             * Save the changed chunk.
+             */
 
             chunk.markUnsaved();
         });
 
+
         /*
-         * Tell the player the fortress was generated.
+         * ========================================================
+         * SUCCESS MESSAGE
+         * ========================================================
          */
+
         source.sendSuccess(
                 () -> Component.literal(
-                        "Generated a Nether Fortress at chunk "
+                        "Generated a "
+                                + structureName
+                                + " at chunk "
                                 + startChunkPos.x()
                                 + ", "
                                 + startChunkPos.z()
@@ -277,7 +542,5 @@ public class ForceRunMod implements ModInitializer {
                 ),
                 true
         );
-
-        return 1;
     }
 }
