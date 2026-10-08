@@ -29,12 +29,16 @@ public class ForceRunMod implements ModInitializer {
 
     private static final SimpleCommandExceptionType ALREADY_PRESENT =
             new SimpleCommandExceptionType(
-                    Component.literal("A fortress already starts in this chunk.")
+                    Component.literal(
+                            "A fortress already starts in this chunk."
+                    )
             );
 
     private static final SimpleCommandExceptionType FAILED =
             new SimpleCommandExceptionType(
-                    Component.literal("Fortress generation failed.")
+                    Component.literal(
+                            "Fortress generation failed."
+                    )
             );
 
     @Override
@@ -51,7 +55,10 @@ public class ForceRunMod implements ModInitializer {
                                         .then(
                                                 Commands.literal("fortress")
                                                         .executes(
-                                                                context -> run(context.getSource())
+                                                                context ->
+                                                                        run(
+                                                                                context.getSource()
+                                                                        )
                                                         )
                                         )
                         )
@@ -64,12 +71,12 @@ public class ForceRunMod implements ModInitializer {
         ServerPlayer player = source.getPlayerOrException();
         ServerLevel level = source.getLevel();
 
-        // Only allow the command in the Nether.
+        // Nether only.
         if (level.dimension() != Level.NETHER) {
             throw NOT_IN_NETHER.create();
         }
 
-        // Get vanilla's Nether Fortress structure.
+        // Get the registered vanilla Nether Fortress.
         Holder<Structure> fortressHolder = level.registryAccess()
                 .lookupOrThrow(Registries.STRUCTURE)
                 .getOrThrow(BuiltinStructures.FORTRESS);
@@ -80,8 +87,7 @@ public class ForceRunMod implements ModInitializer {
                 level.getChunkSource().getGenerator();
 
         /*
-         * Minecraft 26.2:
-         * ChunkPos(BlockPos) was replaced by ChunkPos.containing(BlockPos).
+         * Get the chunk containing the player's current position.
          */
         ChunkPos startChunkPos =
                 ChunkPos.containing(player.blockPosition());
@@ -91,16 +97,15 @@ public class ForceRunMod implements ModInitializer {
                 startChunkPos.z()
         );
 
-        // Do not replace an existing structure start.
+        /*
+         * Do not replace an existing fortress start.
+         */
         if (startChunk.getStartForStructure(fortress) != null) {
             throw ALREADY_PRESENT.create();
         }
 
         /*
-         * Generate a real vanilla StructureStart.
-         *
-         * This uses the registered minecraft:fortress structure
-         * rather than manually creating fortress blocks.
+         * Generate the actual vanilla Fortress StructureStart.
          */
         StructureStart start = fortress.generate(
                 fortressHolder,
@@ -121,10 +126,14 @@ public class ForceRunMod implements ModInitializer {
             throw FAILED.create();
         }
 
-        BoundingBox structureBox = start.getBoundingBox();
+        /*
+         * Get the complete fortress bounding box.
+         */
+        BoundingBox structureBox =
+                start.getBoundingBox();
 
         /*
-         * Determine every chunk touched by the fortress.
+         * Convert the structure bounds into chunk bounds.
          */
         ChunkPos minChunk = new ChunkPos(
                 structureBox.minX() >> 4,
@@ -137,38 +146,41 @@ public class ForceRunMod implements ModInitializer {
         );
 
         /*
-         * Place the generated fortress pieces.
+         * Place all generated fortress pieces.
          */
-        ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
+        ChunkPos.rangeClosed(minChunk, maxChunk)
+                .forEach(chunkPos -> {
 
-            ChunkAccess chunk = level.getChunk(
-                    chunkPos.x(),
-                    chunkPos.z()
-            );
+                    ChunkAccess chunk = level.getChunk(
+                            chunkPos.x(),
+                            chunkPos.z()
+                    );
 
-            BoundingBox chunkBox = new BoundingBox(
-                    chunkPos.getMinBlockX(),
-                    level.getMinY(),
-                    chunkPos.getMinBlockZ(),
-                    chunkPos.getMaxBlockX(),
-                    level.getMaxY() + 1,
-                    chunkPos.getMaxBlockZ()
-            );
+                    BoundingBox chunkBox =
+                            new BoundingBox(
+                                    chunkPos.getMinBlockX(),
+                                    level.getMinY(),
+                                    chunkPos.getMinBlockZ(),
+                                    chunkPos.getMaxBlockX(),
+                                    level.getMaxY() + 1,
+                                    chunkPos.getMaxBlockZ()
+                            );
 
-            start.placeInChunk(
-                    level,
-                    level.getStructureManager(),
-                    generator,
-                    level.getRandom(),
-                    chunkBox,
-                    chunkPos
-            );
+                    start.placeInChunk(
+                            level,
+                            level.getStructureManager(),
+                            generator,
+                            level.getRandom(),
+                            chunkBox,
+                            chunkPos
+                    );
 
-            chunk.markUnsaved();
-        });
+                    chunk.markUnsaved();
+                });
 
         /*
-         * Store the StructureStart in the origin chunk.
+         * Register the actual StructureStart in the
+         * fortress origin chunk.
          */
         startChunk.setStartForStructure(
                 fortress,
@@ -178,30 +190,37 @@ public class ForceRunMod implements ModInitializer {
         startChunk.markUnsaved();
 
         /*
-         * Minecraft 26.x:
-         * ChunkPos#pack replaces the old toLong/asLong methods.
+         * Create the packed chunk reference used by
+         * Minecraft's structure reference system.
          */
-        long startKey = startChunkPos.pack();
+        long startKey = ChunkPos.pack(
+                startChunkPos.x(),
+                startChunkPos.z()
+        );
 
         /*
-         * Store a reference to the origin structure start
-         * in every chunk the fortress occupies.
+         * Register the structure reference in every
+         * chunk touched by the fortress.
          */
-        ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
+        ChunkPos.rangeClosed(minChunk, maxChunk)
+                .forEach(chunkPos -> {
 
-            ChunkAccess chunk = level.getChunk(
-                    chunkPos.x(),
-                    chunkPos.z()
-            );
+                    ChunkAccess chunk = level.getChunk(
+                            chunkPos.x(),
+                            chunkPos.z()
+                    );
 
-            chunk.addReferenceForStructure(
-                    fortress,
-                    startKey
-            );
+                    chunk.addReferenceForStructure(
+                            fortress,
+                            startKey
+                    );
 
-            chunk.markUnsaved();
-        });
+                    chunk.markUnsaved();
+                });
 
+        /*
+         * Tell the player where it was generated.
+         */
         source.sendSuccess(
                 () -> Component.literal(
                         "Generated a Nether Fortress at chunk "
