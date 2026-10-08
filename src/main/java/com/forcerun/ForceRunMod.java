@@ -6,7 +6,6 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
-import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
@@ -30,7 +29,7 @@ public class ForceRunMod implements ModInitializer {
 
     private static final SimpleCommandExceptionType ALREADY_PRESENT =
             new SimpleCommandExceptionType(
-                    Component.literal("A fortress already starts in this chunk. Move to another chunk.")
+                    Component.literal("A fortress already starts in this chunk.")
             );
 
     private static final SimpleCommandExceptionType FAILED =
@@ -52,10 +51,7 @@ public class ForceRunMod implements ModInitializer {
                                         .then(
                                                 Commands.literal("fortress")
                                                         .executes(
-                                                                context ->
-                                                                        run(
-                                                                                context.getSource()
-                                                                        )
+                                                                context -> run(context.getSource())
                                                         )
                                         )
                         )
@@ -68,12 +64,12 @@ public class ForceRunMod implements ModInitializer {
         ServerPlayer player = source.getPlayerOrException();
         ServerLevel level = source.getLevel();
 
-        // The command only works in the Nether.
+        // Only allow the command in the Nether.
         if (level.dimension() != Level.NETHER) {
             throw NOT_IN_NETHER.create();
         }
 
-        // Get the real vanilla Nether Fortress structure.
+        // Get vanilla's Nether Fortress structure.
         Holder<Structure> fortressHolder = level.registryAccess()
                 .lookupOrThrow(Registries.STRUCTURE)
                 .getOrThrow(BuiltinStructures.FORTRESS);
@@ -84,30 +80,27 @@ public class ForceRunMod implements ModInitializer {
                 level.getChunkSource().getGenerator();
 
         /*
-         * Find the chunk containing the player.
-         *
-         * In Minecraft 26.1+, ChunkPos(BlockPos) was replaced
-         * by ChunkPos.containing(BlockPos).
+         * Minecraft 26.2:
+         * ChunkPos(BlockPos) was replaced by ChunkPos.containing(BlockPos).
          */
-        BlockPos playerPos = player.blockPosition();
-        ChunkPos startChunkPos = ChunkPos.containing(playerPos);
+        ChunkPos startChunkPos =
+                ChunkPos.containing(player.blockPosition());
 
-        // Load the origin chunk.
         ChunkAccess startChunk = level.getChunk(
                 startChunkPos.x(),
                 startChunkPos.z()
         );
 
-        // Don't overwrite an existing fortress start.
+        // Do not replace an existing structure start.
         if (startChunk.getStartForStructure(fortress) != null) {
             throw ALREADY_PRESENT.create();
         }
 
         /*
-         * Generate the actual vanilla fortress structure.
+         * Generate a real vanilla StructureStart.
          *
-         * This produces the normal StructureStart and fortress
-         * pieces rather than simply copying a block schematic.
+         * This uses the registered minecraft:fortress structure
+         * rather than manually creating fortress blocks.
          */
         StructureStart start = fortress.generate(
                 fortressHolder,
@@ -128,24 +121,23 @@ public class ForceRunMod implements ModInitializer {
             throw FAILED.create();
         }
 
-        BoundingBox box = start.getBoundingBox();
+        BoundingBox structureBox = start.getBoundingBox();
 
         /*
-         * Convert the fortress bounding box into the first and
-         * last chunks it occupies.
+         * Determine every chunk touched by the fortress.
          */
         ChunkPos minChunk = new ChunkPos(
-                box.minX() >> 4,
-                box.minZ() >> 4
+                structureBox.minX() >> 4,
+                structureBox.minZ() >> 4
         );
 
         ChunkPos maxChunk = new ChunkPos(
-                box.maxX() >> 4,
-                box.maxZ() >> 4
+                structureBox.maxX() >> 4,
+                structureBox.maxZ() >> 4
         );
 
         /*
-         * Place the actual generated fortress pieces.
+         * Place the generated fortress pieces.
          */
         ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
 
@@ -177,9 +169,6 @@ public class ForceRunMod implements ModInitializer {
 
         /*
          * Store the StructureStart in the origin chunk.
-         *
-         * This is what makes Minecraft know a real structure start
-         * exists there.
          */
         startChunk.setStartForStructure(
                 fortress,
@@ -189,17 +178,15 @@ public class ForceRunMod implements ModInitializer {
         startChunk.markUnsaved();
 
         /*
-         * Register references from every chunk touched by the
-         * fortress back to the origin chunk.
-         *
-         * ChunkPos.pack(...) is the 26.x replacement for the
-         * older toLong()/asLong() APIs.
+         * Minecraft 26.x:
+         * ChunkPos#pack replaces the old toLong/asLong methods.
          */
-        long startKey = ChunkPos.pack(
-                startChunkPos.x(),
-                startChunkPos.z()
-        );
+        long startKey = startChunkPos.pack();
 
+        /*
+         * Store a reference to the origin structure start
+         * in every chunk the fortress occupies.
+         */
         ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
 
             ChunkAccess chunk = level.getChunk(
