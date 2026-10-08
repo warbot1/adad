@@ -6,8 +6,8 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
-import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -24,49 +24,93 @@ import net.minecraft.world.level.levelgen.structure.StructureStart;
 public class ForceRunMod implements ModInitializer {
 
     private static final SimpleCommandExceptionType NOT_IN_NETHER =
-            new SimpleCommandExceptionType(Component.literal("You must be in the Nether to use this command."));
+            new SimpleCommandExceptionType(
+                    Component.literal("You must be in the Nether to use this command.")
+            );
+
     private static final SimpleCommandExceptionType ALREADY_PRESENT =
-            new SimpleCommandExceptionType(Component.literal("A fortress already starts in this chunk. Move to another chunk."));
+            new SimpleCommandExceptionType(
+                    Component.literal("A fortress already starts in this chunk. Move to another chunk.")
+            );
+
     private static final SimpleCommandExceptionType FAILED =
-            new SimpleCommandExceptionType(Component.literal("Fortress generation failed."));
+            new SimpleCommandExceptionType(
+                    Component.literal("Fortress generation failed.")
+            );
 
     @Override
     public void onInitialize() {
-        CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
-                dispatcher.register(
-                        Commands.literal("forcerun")
-                                .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
-                                .then(Commands.literal("fortress")
-                                        .executes(ctx -> run(ctx.getSource())))));
+        CommandRegistrationCallback.EVENT.register(
+                (dispatcher, registryAccess, environment) ->
+                        dispatcher.register(
+                                Commands.literal("forcerun")
+                                        .requires(
+                                                Commands.hasPermission(
+                                                        Commands.LEVEL_GAMEMASTERS
+                                                )
+                                        )
+                                        .then(
+                                                Commands.literal("fortress")
+                                                        .executes(
+                                                                context ->
+                                                                        run(
+                                                                                context.getSource()
+                                                                        )
+                                                        )
+                                        )
+                        )
+        );
     }
 
-    private static int run(CommandSourceStack source) throws CommandSyntaxException {
+    private static int run(CommandSourceStack source)
+            throws CommandSyntaxException {
+
         ServerPlayer player = source.getPlayerOrException();
         ServerLevel level = source.getLevel();
 
+        // The command only works in the Nether.
         if (level.dimension() != Level.NETHER) {
             throw NOT_IN_NETHER.create();
         }
 
-        Holder<Structure> holder = level.registryAccess()
+        // Get the real vanilla Nether Fortress structure.
+        Holder<Structure> fortressHolder = level.registryAccess()
                 .lookupOrThrow(Registries.STRUCTURE)
                 .getOrThrow(BuiltinStructures.FORTRESS);
-        Structure structure = holder.value();
 
-        ChunkGenerator generator = level.getChunkSource().getGenerator();
-        net.minecraft.core.BlockPos playerPos = player.blockPosition();
-        ChunkPos startChunkPos = new ChunkPos(
-                SectionPos.blockToSectionCoord(playerPos.getX()),
-                SectionPos.blockToSectionCoord(playerPos.getZ()));
+        Structure fortress = fortressHolder.value();
 
-        ChunkAccess startChunk = level.getChunk(startChunkPos.x(), startChunkPos.z());
-        if (startChunk.getStartForStructure(structure) != null) {
+        ChunkGenerator generator =
+                level.getChunkSource().getGenerator();
+
+        /*
+         * Find the chunk containing the player.
+         *
+         * In Minecraft 26.1+, ChunkPos(BlockPos) was replaced
+         * by ChunkPos.containing(BlockPos).
+         */
+        BlockPos playerPos = player.blockPosition();
+        ChunkPos startChunkPos = ChunkPos.containing(playerPos);
+
+        // Load the origin chunk.
+        ChunkAccess startChunk = level.getChunk(
+                startChunkPos.x(),
+                startChunkPos.z()
+        );
+
+        // Don't overwrite an existing fortress start.
+        if (startChunk.getStartForStructure(fortress) != null) {
             throw ALREADY_PRESENT.create();
         }
 
-        // Same call vanilla world generation makes (ChunkGenerator#tryGenerateStructure).
-        StructureStart start = structure.generate(
-                holder,
+        /*
+         * Generate the actual vanilla fortress structure.
+         *
+         * This produces the normal StructureStart and fortress
+         * pieces rather than simply copying a block schematic.
+         */
+        StructureStart start = fortress.generate(
+                fortressHolder,
                 level.dimension(),
                 level.registryAccess(),
                 generator,
@@ -77,48 +121,111 @@ public class ForceRunMod implements ModInitializer {
                 startChunkPos,
                 0,
                 level,
-                biome -> true);
+                biome -> true
+        );
 
         if (!start.isValid()) {
             throw FAILED.create();
         }
 
         BoundingBox box = start.getBoundingBox();
-        ChunkPos min = new ChunkPos(
-                SectionPos.blockToSectionCoord(box.minX()),
-                SectionPos.blockToSectionCoord(box.minZ()));
-        ChunkPos max = new ChunkPos(
-                SectionPos.blockToSectionCoord(box.maxX()),
-                SectionPos.blockToSectionCoord(box.maxZ()));
 
-        // 1) Place the blocks (what /place structure does).
-        ChunkPos.rangeClosed(min, max).forEach(chunkPos -> start.placeInChunk(
-                level,
-                level.structureManager(),
-                generator,
-                level.getRandom(),
-                new BoundingBox(
-                        chunkPos.getMinBlockX(), level.getMinY(), chunkPos.getMinBlockZ(),
-                        chunkPos.getMaxBlockX(), level.getMaxY() + 1, chunkPos.getMaxBlockZ()),
-                chunkPos));
+        /*
+         * Convert the fortress bounding box into the first and
+         * last chunks it occupies.
+         */
+        ChunkPos minChunk = new ChunkPos(
+                box.minX() >> 4,
+                box.minZ() >> 4
+        );
 
-        // 2) Register it like natural generation does (what /place structure skips):
-        //    the start is stored in its origin chunk...
-        startChunk.setStartForStructure(structure, start);
-        startChunk.markUnsaved();
+        ChunkPos maxChunk = new ChunkPos(
+                box.maxX() >> 4,
+                box.maxZ() >> 4
+        );
 
-        //    ...and every chunk the fortress overlaps gets a reference to that start,
-        //    which is what StructureManager uses to answer "is this position inside a fortress piece?"
-        // Same packing vanilla uses for chunk coordinates in structure references.
-        long startKey = (startChunkPos.x() & 0xFFFFFFFFL) | ((startChunkPos.z() & 0xFFFFFFFFL) << 32);
-        ChunkPos.rangeClosed(min, max).forEach(chunkPos -> {
-            ChunkAccess chunk = level.getChunk(chunkPos.x(), chunkPos.z());
-            chunk.addReferenceForStructure(structure, startKey);
+        /*
+         * Place the actual generated fortress pieces.
+         */
+        ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
+
+            ChunkAccess chunk = level.getChunk(
+                    chunkPos.x(),
+                    chunkPos.z()
+            );
+
+            BoundingBox chunkBox = new BoundingBox(
+                    chunkPos.getMinBlockX(),
+                    level.getMinY(),
+                    chunkPos.getMinBlockZ(),
+                    chunkPos.getMaxBlockX(),
+                    level.getMaxY() + 1,
+                    chunkPos.getMaxBlockZ()
+            );
+
+            start.placeInChunk(
+                    level,
+                    level.getStructureManager(),
+                    generator,
+                    level.getRandom(),
+                    chunkBox,
+                    chunkPos
+            );
+
             chunk.markUnsaved();
         });
 
-        source.sendSuccess(() -> Component.literal("Generated a Nether Fortress at chunk "
-                + startChunkPos.x() + ", " + startChunkPos.z() + "."), true);
+        /*
+         * Store the StructureStart in the origin chunk.
+         *
+         * This is what makes Minecraft know a real structure start
+         * exists there.
+         */
+        startChunk.setStartForStructure(
+                fortress,
+                start
+        );
+
+        startChunk.markUnsaved();
+
+        /*
+         * Register references from every chunk touched by the
+         * fortress back to the origin chunk.
+         *
+         * ChunkPos.pack(...) is the 26.x replacement for the
+         * older toLong()/asLong() APIs.
+         */
+        long startKey = ChunkPos.pack(
+                startChunkPos.x(),
+                startChunkPos.z()
+        );
+
+        ChunkPos.rangeClosed(minChunk, maxChunk).forEach(chunkPos -> {
+
+            ChunkAccess chunk = level.getChunk(
+                    chunkPos.x(),
+                    chunkPos.z()
+            );
+
+            chunk.addReferenceForStructure(
+                    fortress,
+                    startKey
+            );
+
+            chunk.markUnsaved();
+        });
+
+        source.sendSuccess(
+                () -> Component.literal(
+                        "Generated a Nether Fortress at chunk "
+                                + startChunkPos.x()
+                                + ", "
+                                + startChunkPos.z()
+                                + "."
+                ),
+                true
+        );
+
         return 1;
     }
 }
