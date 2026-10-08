@@ -54,9 +54,12 @@ public class ForceRunMod implements ModInitializer {
         Structure structure = holder.value();
 
         ChunkGenerator generator = level.getChunkSource().getGenerator();
-        ChunkPos startChunkPos = new ChunkPos(player.blockPosition());
+        net.minecraft.core.BlockPos playerPos = player.blockPosition();
+        ChunkPos startChunkPos = new ChunkPos(
+                SectionPos.blockToSectionCoord(playerPos.getX()),
+                SectionPos.blockToSectionCoord(playerPos.getZ()));
 
-        ChunkAccess startChunk = level.getChunk(startChunkPos.x, startChunkPos.z);
+        ChunkAccess startChunk = level.getChunk(startChunkPos.x(), startChunkPos.z());
         if (startChunk.getStartForStructure(structure) != null) {
             throw ALREADY_PRESENT.create();
         }
@@ -106,15 +109,16 @@ public class ForceRunMod implements ModInitializer {
 
         //    ...and every chunk the fortress overlaps gets a reference to that start,
         //    which is what StructureManager uses to answer "is this position inside a fortress piece?"
-        long startKey = startChunkPos.toLong();
+        // Same packing vanilla uses for chunk coordinates in structure references.
+        long startKey = (startChunkPos.x() & 0xFFFFFFFFL) | ((startChunkPos.z() & 0xFFFFFFFFL) << 32);
         ChunkPos.rangeClosed(min, max).forEach(chunkPos -> {
-            ChunkAccess chunk = level.getChunk(chunkPos.x, chunkPos.z);
+            ChunkAccess chunk = level.getChunk(chunkPos.x(), chunkPos.z());
             chunk.addReferenceForStructure(structure, startKey);
             chunk.markUnsaved();
         });
 
         source.sendSuccess(() -> Component.literal("Generated a Nether Fortress at chunk "
-                + startChunkPos.x + ", " + startChunkPos.z + "."), true);
+                + startChunkPos.x() + ", " + startChunkPos.z() + "."), true);
         return 1;
     }
 }
