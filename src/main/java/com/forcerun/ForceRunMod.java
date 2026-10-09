@@ -12,6 +12,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.StructureManager;
@@ -26,7 +27,16 @@ public class ForceRunMod implements ModInitializer {
 
     private static final SimpleCommandExceptionType NOT_IN_NETHER =
             new SimpleCommandExceptionType(
-                    Component.literal("You must be in the Nether.")
+                    Component.literal(
+                            "Fortresses and bastions must be generated in the Nether."
+                    )
+            );
+
+    private static final SimpleCommandExceptionType NOT_IN_OVERWORLD =
+            new SimpleCommandExceptionType(
+                    Component.literal(
+                            "Strongholds must be generated in the Overworld."
+                    )
             );
 
     private static final SimpleCommandExceptionType ALREADY_PRESENT =
@@ -74,6 +84,16 @@ public class ForceRunMod implements ModInitializer {
                                                                 )
                                                         )
                                         )
+                                        .then(
+                                                Commands.literal("stronghold")
+                                                        .executes(context ->
+                                                                generate(
+                                                                        context.getSource(),
+                                                                        BuiltinStructures.STRONGHOLD,
+                                                                        "Stronghold"
+                                                                )
+                                                        )
+                                        )
                         )
         );
     }
@@ -87,8 +107,17 @@ public class ForceRunMod implements ModInitializer {
         ServerPlayer player = source.getPlayerOrException();
         ServerLevel level = source.getLevel();
 
-        if (level.dimension() != Level.NETHER) {
-            throw NOT_IN_NETHER.create();
+        boolean stronghold =
+                structureKey.equals(BuiltinStructures.STRONGHOLD);
+
+        if (stronghold) {
+            if (level.dimension() != Level.OVERWORLD) {
+                throw NOT_IN_OVERWORLD.create();
+            }
+        } else {
+            if (level.dimension() != Level.NETHER) {
+                throw NOT_IN_NETHER.create();
+            }
         }
 
         Holder<Structure> holder =
@@ -101,7 +130,8 @@ public class ForceRunMod implements ModInitializer {
         ChunkGenerator generator =
                 level.getChunkSource().getGenerator();
 
-        ChunkPos origin = ChunkPos.containing(player.blockPosition());
+        ChunkPos origin =
+                ChunkPos.containing(player.blockPosition());
 
         ChunkAccess startChunk =
                 level.getChunk(origin.x(), origin.z());
@@ -143,8 +173,35 @@ public class ForceRunMod implements ModInitializer {
 
         StructureManager manager = level.structureManager();
 
+        /*
+         * Register the complete structure start and its references
+         * before placing the pieces into the existing chunks.
+         */
+        startChunk.setStartForStructure(structure, start);
+        startChunk.markUnsaved();
+
+        long startKey =
+                ChunkPos.pack(origin.x(), origin.z());
+
         ChunkPos.rangeClosed(min, max).forEach(pos -> {
-            ChunkAccess chunk = level.getChunk(pos.x(), pos.z());
+            ChunkAccess chunk =
+                    level.getChunk(pos.x(), pos.z());
+
+            chunk.addReferenceForStructure(
+                    structure,
+                    startKey
+            );
+
+            chunk.markUnsaved();
+        });
+
+        /*
+         * Place every chunk intersecting the generated structure.
+         * Each chunk gets a repeatable random source.
+         */
+        ChunkPos.rangeClosed(min, max).forEach(pos -> {
+            ChunkAccess chunk =
+                    level.getChunk(pos.x(), pos.z());
 
             BoundingBox chunkBounds = new BoundingBox(
                     pos.getMinBlockX(),
@@ -155,11 +212,18 @@ public class ForceRunMod implements ModInitializer {
                     pos.getMaxBlockZ()
             );
 
+            long chunkSeed =
+                    level.getSeed()
+                            ^ ChunkPos.pack(pos.x(), pos.z());
+
+            RandomSource random =
+                    RandomSource.create(chunkSeed);
+
             start.placeInChunk(
                     level,
                     manager,
                     generator,
-                    level.getRandom(),
+                    random,
                     chunkBounds,
                     pos
             );
@@ -167,22 +231,12 @@ public class ForceRunMod implements ModInitializer {
             chunk.markUnsaved();
         });
 
-        startChunk.setStartForStructure(structure, start);
-        startChunk.markUnsaved();
-
-        long startKey = ChunkPos.pack(origin.x(), origin.z());
-
-        ChunkPos.rangeClosed(min, max).forEach(pos -> {
-            ChunkAccess chunk = level.getChunk(pos.x(), pos.z());
-            chunk.addReferenceForStructure(structure, startKey);
-            chunk.markUnsaved();
-        });
-
         source.sendSuccess(
                 () -> Component.literal(
                         "Generated " + structureName
-                                + " near chunk " + origin.x()
-                                + ", " + origin.z() + "."
+                                + " near chunk "
+                                + origin.x() + ", "
+                                + origin.z() + "."
                 ),
                 true
         );
